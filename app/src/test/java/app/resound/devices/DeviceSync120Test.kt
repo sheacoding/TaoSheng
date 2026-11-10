@@ -1,3 +1,9 @@
+/**
+ * [INPUT]: DeviceSync、Room 和可控文件插件，覆盖中断及明确的偏移拒绝。
+ * [OUTPUT]: 同步持久化、有限重试、校验去重和保存后删除的回归证据。
+ * [POS]: 通用同步核心测试；声云具体命令与快照边界见 SonicloudFilesTest。
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 package app.resound.devices
 
 import android.app.Application
@@ -37,6 +43,7 @@ class DeviceSync120Test {
         override val id = "fake"
         override val caps = FileCaps(resume, true, checksum)
         var lists = 0; var deleted = 0; var interrupt = false; var bad = false
+        var rejectResume = false
         val offsets = mutableListOf<Long>()
         override suspend fun list(link: DeviceLink): List<DeviceFile> { lists++; return listOf(row) }
         override fun checksumAlgorithm(file: DeviceFile) = "SHA-256"
@@ -44,6 +51,7 @@ class DeviceSync120Test {
         override fun modifiedAt(file: DeviceFile) = 20000L
         override fun download(link: DeviceLink, file: DeviceFile, fromOffset: Long) = flow {
             offsets += fromOffset
+            if (rejectResume && fromOffset > 0) throw ResumeOffsetRejected()
             if (bad) { emit(byteArrayOf(9)); return@flow }
             if (fromOffset == 0L) emit(byteArrayOf(1, 2))
             if (interrupt) { interrupt = false; throw java.io.IOException("disconnected") }
@@ -83,6 +91,20 @@ class DeviceSync120Test {
         assertEquals(listOf(0L, 2L), plugin.offsets)
         assertTrue(db.deviceSync().rows("address").single().imported)
         assertEquals(0, plugin.deleted) // 部分录音保留。
+    }
+    @Test fun rejectedResumeRestartsAtZeroBeforeImportAndDelete() = runBlocking {
+        val plugin = Fake(file).apply { interrupt = true; rejectResume = true }
+        var imports = 0
+        val sync = sync(plugin) { local, _, _, _ ->
+            assertArrayEquals(byteArrayOf(1, 2, 3, 4), local.readBytes())
+            assertEquals(0, plugin.deleted); imports++
+        }
+        sync.importAll(card, link, 0)
+        assertEquals(2L, db.deviceSync().rows("address").single().received)
+        sync.onLinked(card, link, null, null, null)
+        assertEquals(listOf(0L, 2L, 0L), plugin.offsets)
+        assertEquals(1, imports); assertEquals(1, plugin.deleted)
+        assertEquals(4L, db.deviceSync().rows("address").single().received)
     }
     @Test fun unsupportedResumeRestartsWholeFile() = runBlocking {
         val plugin = Fake(file, false).apply { interrupt = true }

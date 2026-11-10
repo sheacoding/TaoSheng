@@ -146,7 +146,11 @@ internal class SonicloudFiles : FileSourcePlugin, DeviceFileDetails {
                     when (frame[1].toInt()) {
                         3 -> started = true
                         4 -> { check(started); emit(frame.copyOfRange(2, frame.size)) }
-                        5 -> { check(frame.size >= 3 && frame[2] == 0.toByte()) { "设备下载失败" }; check(started); completed = true; break }
+                        5 -> {
+                            if (frame.size >= 3 && frame[2] == 2.toByte()) throw ResumeOffsetRejected()
+                            check(frame.size >= 3 && frame[2] == 0.toByte()) { "设备下载失败" }
+                            check(started); completed = true; break
+                        }
                     }
                 }
             }

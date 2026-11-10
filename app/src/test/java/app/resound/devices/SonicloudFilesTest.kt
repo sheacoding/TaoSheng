@@ -93,6 +93,13 @@ class SonicloudFilesTest {
         assertTrue(task.isCancelled)
     }
 
+    @Test fun rejectedOffsetIsReportedToCoreAndAborted() = runBlocking {
+        val link = Link().apply { respond = { cmd -> if (cmd == 2) reply(5, byteArrayOf(2)) } }
+        try { SonicloudFiles().download(link, file, 42).collect(); fail("应请求核心重置偏移") }
+        catch (_: ResumeOffsetRejected) {}
+        assertEquals(listOf(2, 7), link.commands())
+    }
+
     @Test fun failedTransferAbortsAndPreservesOriginalFailure() = runBlocking {
         val link = Link().apply {
             respond = { cmd ->

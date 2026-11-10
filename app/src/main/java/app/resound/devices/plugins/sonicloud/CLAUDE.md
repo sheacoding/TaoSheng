@@ -1,5 +1,7 @@
 # 声云文件与实时协议插件
 
+> L2 | 父级: ../../CLAUDE.md
+
 约定入口：../../DeviceContract.kt；设计依据：docs/方案/外设接入字段表.md。
 
 - SonicloudFiles.kt：复用 FrameCodec，经 DeviceLink 收发公开 BLE 协议；目录快照绑定连接与完整文件元数据，下载发送 uint32 小端偏移，中断时限时请求终止。缓存仅服务当前文件会话，持久化、重试和安全保存由 DeviceSync 负责。

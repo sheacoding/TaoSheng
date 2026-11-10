@@ -1,3 +1,9 @@
+/**
+ * [INPUT]: 文件插件、DeviceLink 与 Room 同步记录，接收设备明确拒绝续传的信号。
+ * [OUTPUT]: DeviceSync 持久化传输、校验、导入后删除及有限次数的从零恢复。
+ * [POS]: 通用设备同步核心；插件只报告协议结果，核心独占本地文件与进度状态。
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 package app.resound.devices
 
 import app.resound.data.CaptureDatabase
@@ -10,6 +16,9 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
+
+/** 插件确认设备拒绝续传位置；仅核心可以清零已持久化的下载进度。 */
+internal class ResumeOffsetRejected : java.io.IOException("设备拒绝续传位置")
 
 internal data class DeviceSlice(val from: Long, val to: Long, val start: Long)
 internal fun deviceSlice(file: DeviceFile, gapStart: Long?, gapEnd: Long?, offset: Long?, modified: Long?): DeviceSlice? {
@@ -102,16 +111,25 @@ internal class DeviceSync(
             var valid = false
             for (attempt in 0 until 3) {
                 val resume = if (plugin.caps.resume && local.isFile) minOf(row.received, local.length()) else 0
-                RandomAccessFile(local, "rw").use { output ->
-                    output.setLength(resume); output.seek(resume)
-                    plugin.download(link, file, resume).collect { bytes ->
-                        output.write(bytes); output.fd.sync()
-                        row = row.copy(received = output.length()); db.deviceSync().save(row)
-                        mutableProgress.value = mutableProgress.value?.let {
-                            val received = completedBytes + row.received
-                            it.copy(doneBytes = received, bytes = maxOf(it.bytes, received))
+                try {
+                    RandomAccessFile(local, "rw").use { output ->
+                        output.setLength(resume); output.seek(resume)
+                        plugin.download(link, file, resume).collect { bytes ->
+                            output.write(bytes); output.fd.sync()
+                            row = row.copy(received = output.length()); db.deviceSync().save(row)
+                            mutableProgress.value = mutableProgress.value?.let {
+                                val received = completedBytes + row.received
+                                it.copy(doneBytes = received, bytes = maxOf(it.bytes, received))
+                            }
                         }
                     }
+                } catch (e: ResumeOffsetRejected) {
+                    if (resume == 0L) throw e
+                    // 普通断连保留进度；只有设备明确拒绝偏移时才丢弃本地部分文件。
+                    RandomAccessFile(local, "rw").use { it.setLength(0); it.fd.sync() }
+                    row = row.copy(received = 0); db.deviceSync().save(row)
+                    mutableProgress.value = mutableProgress.value?.copy(doneBytes = completedBytes)
+                    continue
                 }
                 valid = if (plugin.caps.checksum) {
                     val algorithm = requireNotNull((plugin as? DeviceFileDetails)?.checksumAlgorithm(file)) { "缺少校验算法" }
